@@ -6,12 +6,19 @@ MODEL_DIR="${MODEL_DIR:-/runpod-volume/fish/drama-3}"
 PY=/app/.venv/bin/python
 cd /app
 
-if [ ! -f "$MODEL_DIR/codec.pth" ] || [ ! -f "$MODEL_DIR/model-00008-of-00008.safetensors" ]; then
-  echo "[start] downloading fishaudio/drama-3 to $MODEL_DIR (first run only)"
-  mkdir -p "$MODEL_DIR"
-  HF_HUB_ENABLE_HF_TRANSFER=1 $PY -c "from huggingface_hub import snapshot_download; snapshot_download('fishaudio/drama-3', local_dir='$MODEL_DIR')" \
-    || $PY -c "from huggingface_hub import snapshot_download; snapshot_download('fishaudio/drama-3', local_dir='$MODEL_DIR')"
-fi
+# A half-finished download leaves some shards behind, so only the marker written after a full download counts.
+# The lock keeps several workers from downloading into the same folder at once.
+mkdir -p "$MODEL_DIR"
+(
+  flock 9
+  if [ ! -f "$MODEL_DIR/.download_complete" ]; then
+    echo "[start] downloading fishaudio/drama-3 to $MODEL_DIR (first run only)"
+    until $PY -c "from huggingface_hub import snapshot_download; snapshot_download('fishaudio/drama-3', local_dir='$MODEL_DIR')"; do
+      echo "[start] download failed, retrying in 10s"; sleep 10
+    done
+    touch "$MODEL_DIR/.download_complete"
+  fi
+) 9>"$MODEL_DIR/../drama-3.lock"
 echo "[start] model files:"; ls -la "$MODEL_DIR" | head -30
 
 $PY tools/api_server.py --llama-checkpoint-path "$MODEL_DIR" --decoder-checkpoint-path "$MODEL_DIR/codec.pth" \
